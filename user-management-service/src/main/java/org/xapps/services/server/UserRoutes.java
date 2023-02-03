@@ -3,9 +3,11 @@ package org.xapps.services.server;
 import akka.NotUsed;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Scheduler;
+import akka.actor.typed.javadsl.AskPattern;
 import akka.http.javadsl.marshallers.jackson.Jackson;
 import akka.http.javadsl.model.ContentTypes;
 import akka.http.javadsl.model.HttpEntities;
+import akka.http.javadsl.model.HttpResponse;
 import akka.http.javadsl.model.StatusCodes;
 import akka.http.javadsl.server.PathMatchers;
 import akka.http.javadsl.server.Route;
@@ -23,15 +25,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.xapps.services.entities.User;
 import org.xapps.services.services.UserService;
 import org.xapps.services.services.requests.Login;
-import org.xapps.services.services.responses.LoginResponse;
-import org.xapps.services.services.responses.Response;
-import org.xapps.services.services.responses.UserResponse;
-import org.xapps.services.services.responses.UsersResponse;
+import org.xapps.services.services.responses.*;
 import org.xapps.services.services.utils.PropertiesProvider;
 
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
 
 import static akka.http.javadsl.server.Directives.*;
@@ -70,6 +71,18 @@ public class UserRoutes {
                 return inner.apply(Optional.empty());
             }
         });
+    }
+
+    private Route roles() {
+        Flow<Integer, RolesResponse, NotUsed> usersFlow = ActorFlow.ask(userServiceActor, Duration.ofSeconds(5), (discardable, me) -> {
+            return new UserService.RolesCommand(me);
+        });
+        Flow<RolesResponse, ByteString, NotUsed> marshallerFlow = Flow.of(RolesResponse.class)
+                .map(r -> ByteString.fromString(objectMapper.writeValueAsString(r)));
+        Source<ByteString, NotUsed> usersSource = Source.single(1)
+                .via(usersFlow)
+                .via(marshallerFlow);
+        return complete(HttpEntities.create(ContentTypes.APPLICATION_JSON, usersSource));
     }
 
     private Route loginUser(Login login) {
@@ -148,6 +161,7 @@ public class UserRoutes {
     public Route create() {
         return pathPrefix("users", () ->
                 concat(
+                        path("roles", () -> get(() -> roles())),
                         path("login", () -> post(() -> entity(Jackson.unmarshaller(Login.class), login -> loginUser(login)))),
                         pathEnd(() -> concat(
                                 get(() -> authenticateWithJwt(principal ->
@@ -173,7 +187,7 @@ public class UserRoutes {
                                 put(() -> entity(Jackson.unmarshaller(User.class), user ->
                                         authenticateWithJwt(principal ->
                                                 authorize(() -> {
-                                                    return principal.isPresent() && (principal.get().isAdministrator() || Objects.equals(principal.get().getId(), id));
+                                                    return principal.isPresent() && (principal.get().isAdministrator() || (Objects.equals(principal.get().getId(), id) && !user.isAdministrator()));
                                                 }, () -> {
                                                     return updateUser(id, user);
                                                 })))),

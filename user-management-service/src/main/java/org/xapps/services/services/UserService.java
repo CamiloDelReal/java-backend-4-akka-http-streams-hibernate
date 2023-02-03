@@ -9,6 +9,7 @@ import akka.actor.typed.javadsl.Receive;
 import at.favre.lib.crypto.bcrypt.BCrypt;
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.exceptions.JWTCreationException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,13 @@ public class UserService extends AbstractBehavior<UserService.Command> {
     public record SeedCommand() implements Command {
         @Serial
         private static final long serialVersionUID = 324723847875L;
+    }
+
+    public record RolesCommand(
+            ActorRef<RolesResponse> replyTo
+    ) implements Command {
+        @Serial
+        private static final long serialVersionUID = 39983483742934L;
     }
 
     public record LoginCommand(
@@ -106,6 +114,7 @@ public class UserService extends AbstractBehavior<UserService.Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(SeedCommand.class, this::seed)
+                .onMessage(RolesCommand.class, this::roles)
                 .onMessage(LoginCommand.class, this::login)
                 .onMessage(CreateCommand.class, this::create)
                 .onMessage(ReadAllCommand.class, this::readAll)
@@ -139,6 +148,12 @@ public class UserService extends AbstractBehavior<UserService.Command> {
         return Behaviors.same();
     }
 
+    private Behavior<Command> roles(RolesCommand command) {
+        List<Role> roles = roleRepository.readAll();
+        command.replyTo.tell(new RolesResponse(ResponseType.OK, roles));
+        return Behaviors.same();
+    }
+
     private Behavior<Command> login(LoginCommand command) {
         User user = userRepository.getByEmail(command.login.email());
         if (user != null) {
@@ -155,7 +170,7 @@ public class UserService extends AbstractBehavior<UserService.Command> {
                             .withExpiresAt(new Date(expirationTimestamp))
                             .sign(algorithm);
                     command.replyTo.tell(new LoginResponse(ResponseType.OK, new Authentication(token, expirationTimestamp)));
-                } catch (JsonProcessingException e) {
+                } catch (JWTCreationException | JsonProcessingException e) {
                     log.error("Exception captured");
                     command.replyTo.tell(new LoginResponse(ResponseType.UNAUTHORIZED));
                 }
@@ -183,6 +198,7 @@ public class UserService extends AbstractBehavior<UserService.Command> {
             }
             newUser.setRoles(roles);
             userRepository.create(newUser);
+            newUser.setPassword("<<protected>>");
             command.replyTo.tell(new UserResponse(ResponseType.OK, newUser));
         } else {
             command.replyTo.tell(new UserResponse(ResponseType.EMAIL_NOT_AVAILABLE));
@@ -191,7 +207,10 @@ public class UserService extends AbstractBehavior<UserService.Command> {
     }
 
     private Behavior<Command> readAll(ReadAllCommand command) {
-        List<User> users = userRepository.readAll();
+        List<User> users = userRepository.readAll().stream().map((it) -> {
+            it.setPassword("<<protected>>");
+            return it;
+        }).toList();
         command.replyTo.tell(new UsersResponse(ResponseType.OK, users));
         return Behaviors.same();
     }
@@ -223,6 +242,7 @@ public class UserService extends AbstractBehavior<UserService.Command> {
                     user.setRoles(roles);
                 }
                 userRepository.update(user);
+                user.setPassword("<<protected>>");
                 command.replyTo.tell(new UserResponse(ResponseType.OK, user));
             } else {
                 command.replyTo.tell(new UserResponse(ResponseType.EMAIL_NOT_AVAILABLE));
